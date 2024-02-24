@@ -1,0 +1,126 @@
+CREATE OR REPLACE PROCEDURE SP_IPL(frm_table string,to_table string)
+  RETURNS STRING
+  LANGUAGE PYTHON
+  RUNTIME_VERSION = '3.8'
+  PACKAGES = ('snowflake-snowpark-python')
+  HANDLER = 'run'
+AS
+$$
+from snowflake.snowpark import Session
+from snowflake.snowpark.functions import *
+
+def run(session,frm_table,to_table):
+    
+    #Get data from raw table and transformed table , without get duplicate from raw table
+    ipl_table=session.table("IPL_TABLE") # raw table
+    ipl_table=ipl_table.dropDuplicates(["ID"])
+    clean_table=session.table("clean_table") #Transformed table
+    metadata_table=session.table("METADATA")
+
+    #select only MatchID column from transfromed table for comparing id of both table
+    id_of_clean_table=clean_table.select("ID")
+
+	# Find the data having same MatchID in both the table using ".in_" function 
+    similar_col_df=ipl_table.filter(ipl_table["ID"].in_(id_of_clean_table))
+
+	#Get unique MatchID column from raw table by removing data we get using ".in_" function
+    filter_ipl_dataframe=ipl_table.except_(similar_col_df)
+    
+    #DROP RESULT_MARGIN, POM AND ELIMINATOR
+    filter_ipl_dataframe = filter_ipl_dataframe.filter(col("RESULT_MARGIN")!="NA")
+    filter_ipl_dataframe = filter_ipl_dataframe.filter(col("PLAYER_OF_MATCH") != "NA") 
+    filter_ipl_dataframe = filter_ipl_dataframe.filter(col("ELIMINATOR") != "NA") 	
+	
+	#change neutral vanue and result_margin to int
+    filter_ipl_dataframe=filter_ipl_dataframe.with_column("RESULT_MARGIN", col("RESULT_MARGIN").cast("int"))
+    filter_ipl_dataframe=filter_ipl_dataframe.with_column("NEUTRAL_VENUE", col("NEUTRAL_VENUE").cast("int"))
+    
+    #replace replace 'NA' value with usual method in METHOD
+    filter_ipl_dataframe = filter_ipl_dataframe.withColumn("method", replace(col("method"), "NA", "Usual method"))
+    
+	#REPLACE CITY VALUE 'NA TO DUBAI AND SARJAH
+    filter_ipl_dataframe = filter_ipl_dataframe.withColumn("CITY",when(col("VENUE") == 'Sharjah Cricket Stadium', replace(col("CITY"), "NA", "Sharjah")).otherwise(replace(col("CITY"), "NA", "Dubai")))
+
+	#REPLACE  BENGALURU WITH BANGALORE 
+    filter_ipl_dataframe = filter_ipl_dataframe.withColumn("CITY", replace(col("CITY"), "Bengaluru","Bengalore"))
+    
+	#REPLACE STADIUM NAME WHICH IS DEDICATED TO ONE
+    filter_ipl_dataframe=filter_ipl_dataframe.withColumn("VENUE", replace(col("VENUE"), "M Chinnaswamy Stadium", "M.Chinnaswamy Stadium"))
+
+    #REPLACE TEAMS NAME
+    filter_ipl_dataframe=filter_ipl_dataframe.replace(["Rising Pune Supergiant","Kings XI Punjab", "Delhi Daredevils"], ["Rising Pune Supergiants","Punjab Kings", "Delhi Capitals"])
+
+    #Write and save table in new sesstion table in snowflake
+    filter_ipl_dataframe.write.mode("append").save_as_table("clean_table")
+
+    #Create view for neccessary data coulmns 
+    session.sql("SELECT ID, CITY, DATE, PLAYER_OF_MATCH, VENUE, TEAM1, TEAM2, TOSS_WINNER, WINNER, RESULT, RESULT_MARGIN FROM clean_table").createOrReplaceView("transformed_data_view")
+    
+    
+    # Predictive Analysis Machine learning
+
+    match_df=session.table("clean_table")
+    match_data=match_df.to_pandas()
+
+    #Toss affecting the win dataframe
+    toss_win_result = match_data.groupby('TOSS_WINNER').WINNER.value_counts().reset_index(name="count")
+    toss_win_result['RESULT']=np.where(toss_win_result.WINNER==toss_win_result.TOSS_WINNER,'won','lost')
+    toss_win_result_df = toss_win_result.groupby(['TOSS_WINNER','RESULT'])['count'].sum().reset_index()
+
+    plot = sns.barplot(x="TOSS_WINNER", y="count", hue="RESULT", data=toss_win_result_df)
+    plot.set_title('Matches won/lost by teams winning toss ')
+    plot.set_xticklabels(toss_win_result_df['TOSS_WINNER'].unique(),rotation=90)
+    plt.show()
+
+    #Winning stats of teams bat/field first by venues 
+    venue_toss_decision_result=match_data[["TOSS_WINNER","TOSS_DECISION","WINNER","VENUE"]]
+    venue_toss_decision_result["TOSS_DECISION"]=np.where((venue_toss_decision_result.TOSS_WINNER == venue_toss_decision_result.WINNER)(venue_toss_decision_result.TOSS_DECISION=="field"),"field_won","bat_won")        
+    venue_result=venue_toss_decision_result.groupby(["VENUE"]).TOSS_DECISION.value_counts().reset_index(name="count")
+
+    sns.set(rc={'figure.figsize':(11.7,8.27)})
+    plot = sns.barplot(x="VENUE", y="count", hue="TOSS_DECISION", data=venue_result)
+    plot.set_title('Teams bat/field first results on venues')
+    plot.set_xticklabels(venue_result['VENUE'].unique(),rotation=90)
+    plt.show()
+
+    #Get the percentage of wins for each team in all the venues
+    for i in match_data["WINNER"].unique():  # Get the each team from winner column
+      print("WINNER: ", i)
+      plt.figure(figsize=(6,10))     # Adjusting the figure size
+      plt.pie(match_data[match_data["WINNER"] == i]["VENUE"].value_counts()[:10], autopct = "%1.1f%%")
+      plt.legend(match_data[match_data["WINNER"] == i]["VENUE"].value_counts()[:10].index, bbox_to_anchor = (2,1), loc = "upper right")
+      plt.show()
+
+    #Team win when they play at there homwtown
+    homeground={}
+    for i in match_data.WINNER.unique():
+        homeground[i]=match_data[match_data.WINNER==i].VENUE.value_counts().head(1).index[0]
+
+    matches_played_homeground={}
+    for i in homeground:
+        matches_played_homeground[i]=len(match_data[match_data.VENUE==homeground[i]])
+
+    # Gives the number of matches won by each team on their homeground
+    matches_won_homeground={}
+    for i in homeground:
+        matches_won_homeground[i]=len(match_data.loc[(match_data['VENUE']==homeground[i]) & (match_data['WINNER']==i)])
+
+    #Success percentage of each team on their homeground
+    success_percentage={}
+    for i in homeground:
+        success_percentage[i]=(matches_won_homeground[i]/matches_played_homeground [i])*100
+    success_percentage
+
+    teams = list(success_percentage.keys())
+    success_percentage = list(success_percentage.values())
+
+    # plotting barplot of Success_percentage with above values
+    sns.barplot(teams,success_percentage)
+    plt.xticks(rotation=90)
+    plt.xlabel("Teams", fontsize = 14)
+    plt.ylabel("Success Percentage", fontsize = 14)
+    plt.title("Success percentage of each team at thier home grounds", fontsize = 15)
+    plt.show()
+
+    return "SUCCESS"
+$$;

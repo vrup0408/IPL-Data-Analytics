@@ -1,0 +1,442 @@
+{
+    "name": "ipl02_pipeline",
+    "properties": {
+        "activities": [
+            {
+                "name": "Copy File-Into-Archive",
+                "type": "Copy",
+                "dependsOn": [
+                    {
+                        "activity": "snowflake script calling",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "DelimitedTextSource",
+                        "storeSettings": {
+                            "type": "AzureBlobFSReadSettings",
+                            "recursive": true,
+                            "wildcardFileName": "*",
+                            "enablePartitionDiscovery": false
+                        },
+                        "formatSettings": {
+                            "type": "DelimitedTextReadSettings"
+                        }
+                    },
+                    "sink": {
+                        "type": "DelimitedTextSink",
+                        "storeSettings": {
+                            "type": "AzureBlobFSWriteSettings"
+                        },
+                        "formatSettings": {
+                            "type": "DelimitedTextWriteSettings",
+                            "quoteAllText": true,
+                            "fileExtension": ".txt"
+                        }
+                    },
+                    "enableStaging": false,
+                    "translator": {
+                        "type": "TabularTranslator",
+                        "typeConversion": true,
+                        "typeConversionSettings": {
+                            "allowDataTruncation": true,
+                            "treatBooleanAsNumber": false
+                        }
+                    }
+                },
+                "inputs": [
+                    {
+                        "referenceName": "crfilecopy",
+                        "type": "DatasetReference"
+                    }
+                ],
+                "outputs": [
+                    {
+                        "referenceName": "datamove",
+                        "type": "DatasetReference"
+                    }
+                ]
+            },
+            {
+                "name": "Delete ADLS File",
+                "type": "Delete",
+                "dependsOn": [
+                    {
+                        "activity": "Copy File-Into-Archive",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "dataset": {
+                        "referenceName": "crfilecopy",
+                        "type": "DatasetReference"
+                    },
+                    "enableLogging": false,
+                    "storeSettings": {
+                        "type": "AzureBlobFSReadSettings",
+                        "recursive": true,
+                        "wildcardFileName": "*",
+                        "enablePartitionDiscovery": false
+                    }
+                }
+            },
+            {
+                "name": "snowflake script calling",
+                "type": "Script",
+                "dependsOn": [
+                    {
+                        "activity": "ADLS to snowflake",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "linkedServiceName": {
+                    "referenceName": "ipl02_Snowflake",
+                    "type": "LinkedServiceReference"
+                },
+                "typeProperties": {
+                    "scripts": [
+                        {
+                            "type": "Query",
+                            "text": "CALL IPL_SCHEMA.SP_IPL('IPL_TABLE','clean_table')"
+                        }
+                    ],
+                    "scriptBlockExecutionTimeout": "02:00:00"
+                }
+            },
+            {
+                "name": "Referesh Power BI Dataset",
+                "type": "WebActivity",
+                "dependsOn": [
+                    {
+                        "activity": "snowflake script calling",
+                        "dependencyConditions": [
+                            "Succeeded"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "url": "https://prod-16.eastus.logic.azure.com:443/workflows/6c5e1d80f0ce4427811acc8ad1d23231/triggers/manual/paths/invoke?api-version=2016-10-01&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=QfGwTWAesVUoOKpS4MoTu7eG-ixEdtEVtRLZw1Wvn0w",
+                    "method": "POST",
+                    "body": {
+                        "value": "@activity('snowflake script calling').output",
+                        "type": "Expression"
+                    }
+                }
+            },
+            {
+                "name": "ADLS to snowflake",
+                "type": "Copy",
+                "dependsOn": [],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "source": {
+                        "type": "DelimitedTextSource",
+                        "storeSettings": {
+                            "type": "AzureBlobFSReadSettings",
+                            "recursive": true,
+                            "wildcardFileName": "*.csv",
+                            "enablePartitionDiscovery": false
+                        },
+                        "formatSettings": {
+                            "type": "DelimitedTextReadSettings"
+                        }
+                    },
+                    "sink": {
+                        "type": "SnowflakeSink",
+                        "importSettings": {
+                            "type": "SnowflakeImportCopyCommand",
+                            "additionalCopyOptions": {
+                                "ON_ERROR": "CONTINUE"
+                            }
+                        }
+                    },
+                    "enableStaging": true,
+                    "stagingSettings": {
+                        "linkedServiceName": {
+                            "referenceName": "abs_ipl02",
+                            "type": "LinkedServiceReference"
+                        },
+                        "path": "output"
+                    },
+                    "enableSkipIncompatibleRow": true,
+                    "translator": {
+                        "type": "TabularTranslator",
+                        "mappings": [
+                            {
+                                "source": {
+                                    "name": "id",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "ID",
+                                    "type": "Int64"
+                                }
+                            },
+                            {
+                                "source": {
+                                    "name": "city",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "CITY",
+                                    "type": "String"
+                                }
+                            },
+                            {
+                                "source": {
+                                    "name": "date",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "DATE",
+                                    "type": "DateTime"
+                                }
+                            },
+                            {
+                                "source": {
+                                    "name": "player_of_match",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "PLAYER_OF_MATCH",
+                                    "type": "String"
+                                }
+                            },
+                            {
+                                "source": {
+                                    "name": "venue",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "VENUE",
+                                    "type": "String"
+                                }
+                            },
+                            {
+                                "source": {
+                                    "name": "neutral_venue",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "NEUTRAL_VENUE",
+                                    "type": "Int64"
+                                }
+                            },
+                            {
+                                "source": {
+                                    "name": "team1",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "TEAM1",
+                                    "type": "String"
+                                }
+                            },
+                            {
+                                "source": {
+                                    "name": "team2",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "TEAM2",
+                                    "type": "String"
+                                }
+                            },
+                            {
+                                "source": {
+                                    "name": "toss_winner",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "TOSS_WINNER",
+                                    "type": "String"
+                                }
+                            },
+                            {
+                                "source": {
+                                    "name": "toss_decision",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "TOSS_DECISION",
+                                    "type": "String"
+                                }
+                            },
+                            {
+                                "source": {
+                                    "name": "winner",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "WINNER",
+                                    "type": "String"
+                                }
+                            },
+                            {
+                                "source": {
+                                    "name": "result",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "RESULT",
+                                    "type": "String"
+                                }
+                            },
+                            {
+                                "source": {
+                                    "name": "result_margin",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "RESULT_MARGIN",
+                                    "type": "String"
+                                }
+                            },
+                            {
+                                "source": {
+                                    "name": "eliminator",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "ELIMINATOR",
+                                    "type": "String"
+                                }
+                            },
+                            {
+                                "source": {
+                                    "name": "method",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "METHOD",
+                                    "type": "String"
+                                }
+                            },
+                            {
+                                "source": {
+                                    "name": "umpire1",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "UMPIRE1",
+                                    "type": "String"
+                                }
+                            },
+                            {
+                                "source": {
+                                    "name": "umpire2",
+                                    "type": "String"
+                                },
+                                "sink": {
+                                    "name": "UMPIRE2",
+                                    "type": "String"
+                                }
+                            }
+                        ]
+                    }
+                },
+                "inputs": [
+                    {
+                        "referenceName": "matchsource",
+                        "type": "DatasetReference",
+                        "parameters": {
+                            "pfilename": "IPL Matches 2008-2020.csv"
+                        }
+                    }
+                ],
+                "outputs": [
+                    {
+                        "referenceName": "matchsinksnowflake",
+                        "type": "DatasetReference"
+                    }
+                ]
+            },
+            {
+                "name": "Email Alert for Copy Data failed",
+                "type": "WebActivity",
+                "dependsOn": [
+                    {
+                        "activity": "ADLS to snowflake",
+                        "dependencyConditions": [
+                            "Failed"
+                        ]
+                    }
+                ],
+                "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                },
+                "userProperties": [],
+                "typeProperties": {
+                    "url": "https://prod-43.eastus.logic.azure.com:443/workflows/54f6577f2e3849de95371e84cac5918c/triggers/manual/paths/invoke?api-version=2016-10-01&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=LUWvMDaF9ROk2eUxc88ib05Bu53OgrgBgjTHSsdJxGw",
+                    "method": "POST",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": {
+                        "value": "{\n    \"pipeline\":\"@{pipeline().Pipeline}\",\n     \"DataFactoryName\":\"@{pipeline().DataFactory}\",\n    \"ErrorMessage\":\"@{pipeline().parameters.error}\",\n    \"Runid\":\"@{pipeline().RunId}\"\n}\n",
+                        "type": "Expression"
+                    }
+                }
+            }
+        ],
+        "parameters": {
+            "error": {
+                "type": "string",
+                "defaultValue": "Copy Data Failed"
+            }
+        },
+        "annotations": [],
+        "lastPublishTime": "2023-02-23T08:52:46Z"
+    },
+    "type": "Microsoft.DataFactory/factories/pipelines"
+}
